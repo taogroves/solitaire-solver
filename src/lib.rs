@@ -390,6 +390,11 @@ impl Board {
         moves
     }
 
+    fn recycle_waste_to_stock(&mut self) {
+        self.stock.extend(self.waste.drain(..).rev());
+        self.recycles += 1;
+    }
+
     fn add_waste_moves(&self, moves: &mut Vec<(Action, Board)>) {
         let Some(&card) = self.waste.last() else {
             return;
@@ -529,9 +534,7 @@ impl Board {
                 if cursor.waste.is_empty() || cursor.recycles >= options.max_recycles {
                     break;
                 }
-                cursor.stock = cursor.waste.clone();
-                cursor.waste.clear();
-                cursor.recycles += 1;
+                cursor.recycle_waste_to_stock();
                 clicks += 1;
                 prefix.push('R');
             } else {
@@ -571,9 +574,7 @@ impl Board {
             ));
         } else if !self.waste.is_empty() && self.recycles < options.max_recycles {
             let mut next = self.clone();
-            next.stock = next.waste.clone();
-            next.waste.clear();
-            next.recycles += 1;
+            next.recycle_waste_to_stock();
             moves.push((
                 Action {
                     text: "R".to_string(),
@@ -839,6 +840,118 @@ pub fn deck_to_numeric_string(deck: &[Card]) -> String {
         encoded.push(deck[i]);
     }
     encoded.iter().map(|card| card.numeric_code()).collect()
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct BoardStateCardJson {
+    pub suit: String,
+    pub rank: u8,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct BoardStateStackCardJson {
+    pub suit: String,
+    pub rank: u8,
+    pub face_up: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct BoardStateJson {
+    pub tableau: Vec<Vec<BoardStateStackCardJson>>,
+    pub stock: Vec<BoardStateCardJson>,
+    pub waste: Vec<BoardStateCardJson>,
+    pub foundations: [u8; 4],
+    pub recycles: u8,
+}
+
+fn parse_board_suit(input: &str) -> Result<u8, String> {
+    match input.trim().to_ascii_uppercase().as_str() {
+        "HEARTS" | "H" | "FH" => Ok(0),
+        "DIAMONDS" | "D" | "FD" => Ok(1),
+        "CLUBS" | "C" | "FC" => Ok(2),
+        "SPADES" | "S" | "FS" => Ok(3),
+        _ => Err(format!("invalid suit {input}")),
+    }
+}
+
+fn card_from_json(suit: &str, rank: u8) -> Result<Card, String> {
+    if !(1..=13).contains(&rank) {
+        return Err(format!("invalid rank {rank}"));
+    }
+    Ok(Card::new(parse_board_suit(suit)?, rank))
+}
+
+impl Board {
+    fn from_state_json(input: &BoardStateJson) -> Result<Self, String> {
+        if input.tableau.len() != TABLEAU_COUNT {
+            return Err(format!(
+                "expected {TABLEAU_COUNT} tableau columns, got {}",
+                input.tableau.len()
+            ));
+        }
+
+        let mut seen = [false; DECK_SIZE];
+        let mut mark = |card: Card| -> Result<(), String> {
+            let idx = usize::from(card.0);
+            if seen[idx] {
+                return Err(format!("duplicate card {}", card.code()));
+            }
+            seen[idx] = true;
+            Ok(())
+        };
+
+        let mut tableau: [Vec<StackCard>; TABLEAU_COUNT] = std::array::from_fn(|_| Vec::new());
+        for (col, pile) in input.tableau.iter().enumerate() {
+            for item in pile {
+                let card = card_from_json(&item.suit, item.rank)?;
+                mark(card)?;
+                tableau[col].push(StackCard {
+                    card,
+                    face_up: item.face_up,
+                });
+            }
+        }
+
+        let mut stock = Vec::with_capacity(input.stock.len());
+        for item in &input.stock {
+            let card = card_from_json(&item.suit, item.rank)?;
+            mark(card)?;
+            stock.push(card);
+        }
+
+        let mut waste = Vec::with_capacity(input.waste.len());
+        for item in &input.waste {
+            let card = card_from_json(&item.suit, item.rank)?;
+            mark(card)?;
+            waste.push(card);
+        }
+
+        for rank in input.foundations {
+            if rank > 13 {
+                return Err(format!("invalid foundation rank {rank}"));
+            }
+        }
+
+        Ok(Self {
+            tableau,
+            stock,
+            waste,
+            foundations: input.foundations,
+            recycles: input.recycles,
+        })
+    }
+}
+
+pub fn solve_board_state(json: &str, options: SolveOptions) -> SolveResponse {
+    let input = match serde_json::from_str::<BoardStateJson>(json) {
+        Ok(input) => input,
+        Err(err) => return SolveResponse::invalid(err.to_string()),
+    };
+    let board = match Board::from_state_json(&input) {
+        Ok(board) => board,
+        Err(err) => return SolveResponse::invalid(err),
+    };
+    solve_board(board, options)
 }
 
 pub fn solve_game(input: &str, options: SolveOptions) -> SolveResponse {
@@ -1421,6 +1534,14 @@ pub fn solve_game_string(game_string: &str, options_json: Option<String>) -> Str
 }
 
 #[wasm_bindgen]
+pub fn solve_board_state_json(board_json: &str, options_json: Option<String>) -> String {
+    response_json(solve_board_state(
+        board_json,
+        parse_options_json(options_json),
+    ))
+}
+
+#[wasm_bindgen]
 pub fn is_solvable_game_string(game_string: &str, options_json: Option<String>) -> bool {
     solve_game(game_string, parse_options_json(options_json)).solved
 }
@@ -1466,6 +1587,10 @@ mod tests {
         "122021053133044042092074131071132062123061011022101013064091114073063082034041014024103121094113102031033134072111084032023052012081112124043104083093051054"
     }
 
+    fn quick_solved_draw_three_deal() -> &'static str {
+        "063101072122011034092104111073071051064024102094023124074123081044133012134061033013114021041112093022062121132082052043054131091014103113042031083032053084"
+    }
+
     #[test]
     fn deal_layout_matches_reference_encoding() {
         let input = reference_draw_three_deal();
@@ -1494,9 +1619,60 @@ mod tests {
     }
 
     #[test]
+    fn stock_click_recycles_waste_in_draw_order() {
+        let board = Board {
+            tableau: std::array::from_fn(|_| Vec::new()),
+            stock: Vec::new(),
+            waste: vec![
+                Card::new(3, 1),
+                Card::new(3, 2),
+                Card::new(3, 3),
+                Card::new(3, 4),
+                Card::new(3, 5),
+                Card::new(3, 6),
+            ],
+            foundations: [0; 4],
+            recycles: 0,
+        };
+        let options = SolveOptions {
+            max_states: 100,
+            max_moves: 10,
+            max_recycles: 1,
+            terminate_early: true,
+        };
+
+        let mut recycle_moves = Vec::new();
+        board.add_stock_click_move(&mut recycle_moves, &options);
+        assert_eq!(recycle_moves.len(), 1);
+        assert_eq!(recycle_moves[0].0.text, "R");
+        let recycled = &recycle_moves[0].1;
+        assert_eq!(
+            recycled.stock,
+            vec![
+                Card::new(3, 6),
+                Card::new(3, 5),
+                Card::new(3, 4),
+                Card::new(3, 3),
+                Card::new(3, 2),
+                Card::new(3, 1),
+            ]
+        );
+        assert!(recycled.waste.is_empty());
+        assert_eq!(recycled.recycles, 1);
+
+        let mut draw_moves = Vec::new();
+        recycled.add_stock_click_move(&mut draw_moves, &options);
+        assert_eq!(draw_moves.len(), 1);
+        assert_eq!(
+            draw_moves[0].1.waste,
+            vec![Card::new(3, 1), Card::new(3, 2), Card::new(3, 3)]
+        );
+    }
+
+    #[test]
     fn solves_reference_draw_three_game_string() {
         let response = solve_game(
-            reference_draw_three_deal(),
+            quick_solved_draw_three_deal(),
             SolveOptions {
                 max_states: 300_000,
                 max_moves: 120,
@@ -1505,13 +1681,14 @@ mod tests {
             },
         );
         assert!(response.solved, "{response:?}");
+        assert_eq!(response.move_count, 98);
         assert!(!response.moves.is_empty());
     }
 
     #[test]
     fn records_first_discovered_solution_profile() {
         let response = solve_game(
-            reference_draw_three_deal(),
+            quick_solved_draw_three_deal(),
             SolveOptions {
                 max_states: 300_000,
                 max_moves: 120,
