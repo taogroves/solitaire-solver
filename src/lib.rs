@@ -30,7 +30,7 @@ impl Card {
         matches!(self.suit(), 0 | 1)
     }
 
-    fn code(self) -> String {
+    pub fn code(self) -> String {
         let rank = match self.rank() {
             1 => "A".to_string(),
             2..=9 => self.rank().to_string(),
@@ -301,6 +301,30 @@ impl Board {
             foundations: [0; 4],
             recycles: 0,
         })
+    }
+
+    fn deal_layout(&self, deck: &[Card]) -> DealLayout {
+        let tableau = self
+            .tableau
+            .iter()
+            .enumerate()
+            .map(|(col, pile)| DealColumnView {
+                index: (col + 1) as u8,
+                cards: pile
+                    .iter()
+                    .map(|item| DealCardView {
+                        label: item.card.code(),
+                        face_up: item.face_up,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        DealLayout {
+            tableau,
+            stock: self.stock.iter().map(|card| card.code()).collect(),
+            numeric_string: deck_to_numeric_string(deck),
+        }
     }
 
     fn solved(&self) -> bool {
@@ -769,6 +793,35 @@ fn parse_card_code(input: &str) -> Result<Card, String> {
         _ => return Err(format!("invalid suit in {input}")),
     };
     Ok(Card::new(suit, rank))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DealCardView {
+    pub label: String,
+    pub face_up: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DealColumnView {
+    /// Column number (1–7).
+    pub index: u8,
+    pub cards: Vec<DealCardView>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DealLayout {
+    pub tableau: Vec<DealColumnView>,
+    /// Stock pile from bottom (drawn last on a fresh pass) to top (drawn first).
+    pub stock: Vec<String>,
+    /// Canonical 156-character numeric encoding for this deal.
+    pub numeric_string: String,
+}
+
+/// Parse a game string and return the initial tableau/stock layout (foundations empty).
+pub fn deal_layout_from_game_string(input: &str) -> Result<DealLayout, String> {
+    let deck = parse_game_string(input)?;
+    let board = Board::from_deck(&deck)?;
+    Ok(board.deal_layout(&deck))
 }
 
 pub fn deck_to_numeric_string(deck: &[Card]) -> String {
@@ -1411,6 +1464,17 @@ mod tests {
 
     fn reference_draw_three_deal() -> &'static str {
         "122021053133044042092074131071132062123061011022101013064091114073063082034041014024103121094113102031033134072111084032023052012081112124043104083093051054"
+    }
+
+    #[test]
+    fn deal_layout_matches_reference_encoding() {
+        let input = reference_draw_three_deal();
+        let layout = deal_layout_from_game_string(input).unwrap();
+        assert_eq!(layout.numeric_string, input);
+        assert_eq!(layout.tableau.len(), 7);
+        assert_eq!(layout.stock.len(), 24);
+        assert_eq!(layout.tableau[6].cards.len(), 7);
+        assert!(layout.tableau[6].cards.last().unwrap().face_up);
     }
 
     #[test]
