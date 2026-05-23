@@ -1,6 +1,6 @@
 # Klondike Solitaire Solver
 
-Perfect-information **draw-three Klondike** solver used by the [solitaire-web](../solitaire-web) app. The crate compiles to native Rust (examples, tests, seed-library tooling) and to WebAssembly via `wasm-pack`.
+Perfect-information **draw-three Klondike** solver used by my solitaire web app. The crate compiles to native Rust (examples, tests, seed-library tooling) and to WebAssembly via `wasm-pack`.
 
 ## Game string format
 
